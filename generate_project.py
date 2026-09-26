@@ -8,7 +8,7 @@ def parse_markdown_to_json(doc_path, uml_path, json_out_path):
     This acts as the 'Agent Input' preparation phase.
     """
     print(f"Parsing {doc_path} and {uml_path}...")
-    
+
     data = {
         "components": [],
         "stack": [],
@@ -63,7 +63,7 @@ def parse_markdown_to_json(doc_path, uml_path, json_out_path):
     if os.path.exists(uml_path):
         with open(uml_path, 'r', encoding='utf-8') as f:
             uml_content = f.read()
-        
+
         # Extract all PlantUML blocks and their diagram names
         # e.g., @startuml UseCaseDiagram ... @enduml
         uml_matches = re.findall(r'@startuml\s+(\w+)(.*?)@enduml', uml_content, re.DOTALL)
@@ -74,7 +74,7 @@ def parse_markdown_to_json(doc_path, uml_path, json_out_path):
     with open(json_out_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
     print(f"Generated structured input JSON at: {json_out_path}")
-    
+
     return json_out_path
 
 
@@ -92,7 +92,7 @@ def generate_scaffold_from_json(json_in_path, output_dir="project_output"):
     if parsed_data.get("openapi"):
         with open(os.path.join(output_dir, "openapi.yaml"), "w", encoding='utf-8') as f:
             f.write(parsed_data["openapi"])
-            
+
     if parsed_data.get("protobuf"):
         with open(os.path.join(output_dir, "internal.proto"), "w", encoding='utf-8') as f:
             f.write(parsed_data["protobuf"])
@@ -111,7 +111,7 @@ def generate_scaffold_from_json(json_in_path, output_dir="project_output"):
         with open(os.path.join(output_dir, "traceability_matrix.csv"), "w", encoding='utf-8') as f:
             f.write(parsed_data["traceability"])
 
-    # 2. Generate package.json (Dependency File)
+    # 2. Generate package.json (Dependency File) for the backend microservices
     package_json = {
         "name": "space-fractions",
         "version": "1.0.0",
@@ -133,7 +133,7 @@ def generate_scaffold_from_json(json_in_path, output_dir="project_output"):
     with open(os.path.join(output_dir, "package.json"), "w", encoding='utf-8') as f:
         json.dump(package_json, f, indent=2)
 
-    # 3. Generate Dockerfile
+    # 3. Generate Dockerfile (still useful for the backend microservices)
     dockerfile_content = """FROM node:18-alpine
 WORKDIR /app
 COPY package*.json ./
@@ -145,9 +145,9 @@ CMD ["npm", "start"]
     with open(os.path.join(output_dir, "Dockerfile"), "w", encoding='utf-8') as f:
         f.write(dockerfile_content)
 
-    # 4. Generate README.md with UML insights
+    # 4. Generate README.md with UML insights + desktop app instructions
     uml_diagram_names = list(parsed_data.get("uml_diagrams", {}).keys())
-    
+
     readme_content = f"""# Space Fractions
 
 ## Architecture Overview
@@ -162,15 +162,38 @@ This project is generated from the Space Fractions Architecture Document.
 ### UML Diagrams Parsed
 The following UML diagrams were parsed and understood by the agent:
 {chr(10).join(['- ' + uml for uml in uml_diagram_names])}
+
+## Running the Desktop Game
+
+The game ships as an Electron desktop app in `/frontend`.
+
+```bash
+cd frontend
+npm install
+npm start
+```
+
+## Building an Installer (Windows / macOS / Linux)
+
+```bash
+cd frontend
+npm install
+npm run dist
+```
+
+This produces a native installer/executable in `frontend/dist/` (via electron-builder):
+- Windows: `.exe` (NSIS installer)
+- macOS: `.dmg`
+- Linux: `.AppImage`
 """
     with open(os.path.join(output_dir, "README.md"), "w", encoding='utf-8') as f:
         f.write(readme_content)
 
-    # 5. Generate a Basic Game UI (Frontend)
-    # The evaluation explicitly asked for "the generated game with UI"
+    # 5. Generate the Desktop Game (Electron app, replaces the plain web frontend)
     frontend_dir = os.path.join(output_dir, "frontend")
     os.makedirs(frontend_dir, exist_ok=True)
-    
+
+    # 5a. Game UI (same game content as before, now hosted inside an Electron window)
     html_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -178,7 +201,7 @@ The following UML diagrams were parsed and understood by the agent:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Space Fractions Game</title>
     <style>
-        body { font-family: Arial, sans-serif; background-color: #0b0c10; color: #66fcf1; text-align: center; padding: 50px; }
+        body { font-family: Arial, sans-serif; background-color: #0b0c10; color: #66fcf1; text-align: center; padding: 50px; -webkit-user-select: none; user-select: none; }
         .screen { display: none; }
         .active { display: block; }
         button { background-color: #45a29e; color: white; border: none; padding: 15px 32px; font-size: 16px; cursor: pointer; margin-top: 20px; border-radius: 5px; }
@@ -198,6 +221,7 @@ The following UML diagrams were parsed and understood by the agent:
     <div id="menu" class="screen">
         <h1>Main Menu</h1>
         <button onclick="startGame()">Play Game</button>
+        <button onclick="quitGame()">Quit</button>
     </div>
 
     <!-- Game Screen -->
@@ -230,6 +254,11 @@ The following UML diagrams were parsed and understood by the agent:
             document.getElementById('feedback').innerText = isCorrect ? "Great job! Your logic is flawless." : "Mission failed. Better luck next time!";
             showScreen('end');
         }
+        function quitGame() {
+            if (window.desktop && window.desktop.quit) {
+                window.desktop.quit();
+            }
+        }
     </script>
 </body>
 </html>
@@ -237,11 +266,95 @@ The following UML diagrams were parsed and understood by the agent:
     with open(os.path.join(frontend_dir, "index.html"), "w", encoding='utf-8') as f:
         f.write(html_content)
 
+    # 5b. Electron main process — opens a native desktop window
+    main_js_content = """const { app, BrowserWindow, ipcMain } = require('electron');
+const path = require('path');
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 900,
+    height: 700,
+    resizable: true,
+    backgroundColor: '#0b0c10',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  win.setMenuBarVisibility(false);
+  win.loadFile('index.html');
+}
+
+app.whenReady().then(() => {
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+ipcMain.on('quit-app', () => {
+  app.quit();
+});
+"""
+    with open(os.path.join(frontend_dir, "main.js"), "w", encoding='utf-8') as f:
+        f.write(main_js_content)
+
+    # 5c. Preload script — safe, minimal bridge between renderer and main process
+    preload_js_content = """const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('desktop', {
+  quit: () => ipcRenderer.send('quit-app')
+});
+"""
+    with open(os.path.join(frontend_dir, "preload.js"), "w", encoding='utf-8') as f:
+        f.write(preload_js_content)
+
+    # 5d. Electron app manifest, with packaging config for real installers
+    electron_package_json = {
+        "name": "space-fractions-desktop",
+        "version": "1.0.0",
+        "description": "Space Fractions - Desktop Game",
+        "main": "main.js",
+        "scripts": {
+            "start": "electron .",
+            "dist": "electron-builder"
+        },
+        "devDependencies": {
+            "electron": "^31.0.0",
+            "electron-builder": "^24.13.3"
+        },
+        "build": {
+            "appId": "com.spacefractions.desktop",
+            "productName": "Space Fractions",
+            "files": [
+                "**/*"
+            ],
+            "win": {
+                "target": "nsis"
+            },
+            "mac": {
+                "target": "dmg"
+            },
+            "linux": {
+                "target": "AppImage"
+            }
+        }
+    }
+    with open(os.path.join(frontend_dir, "package.json"), "w", encoding='utf-8') as f:
+        json.dump(electron_package_json, f, indent=2)
+
     # 6. Generate Backend Components & Test Cases
     for component in parsed_data.get("components", []):
         comp_dir = os.path.join(output_dir, component)
         os.makedirs(comp_dir, exist_ok=True)
-        
+
         index_js = f"""const express = require('express');
 const app = express();
 const port = process.env.PORT || 80;
@@ -258,7 +371,7 @@ app.listen(port, () => {{
 """
         with open(os.path.join(comp_dir, "index.js"), "w", encoding='utf-8') as f:
             f.write(index_js)
-            
+
         test_js = f"""describe('{component}', () => {{
   it('should have basic test setup', () => {{
     expect(true).toBe(true);
@@ -274,9 +387,9 @@ if __name__ == "__main__":
     doc_path = "Architecture_Documentation.md"
     uml_path = "Architecture_View.md"
     json_path = "structured_input.json"
-    
+
     # Step 1: Prepare Input
     parse_markdown_to_json(doc_path, uml_path, json_path)
-    
+
     # Step 2: Act as Agent
     generate_scaffold_from_json(json_path)
